@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VIP Cipher Terminal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;800&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="noise"></div>
+  <div class="scanlines"></div>
+  <canvas id="matrixCanvas" aria-hidden="true"></canvas>
+
+  <main class="app-shell">
+    <aside class="side-panel glass">
+      <div class="brand-block">
+        <p class="kicker">restricted network</p>
+        <h1>VIP Cipher Terminal</h1>
+        <p class="subtle">Private browser-based messaging workspace for elite access only.</p>
+      </div>
+
+      <section class="globe-card glass-inner">
+        <div class="card-header">
+          <span class="status-dot"></span>
+          <span>global node sync</span>
+        </div>
+        <canvas id="globeCanvas" width="420" height="420" aria-label="Animated globe"></canvas>
+        <div class="globe-meta">
+          <div>
+            <span class="meta-label">security</span>
+            <strong>AES‑visual shell</strong>
+          </div>
+          <div>
+            <span class="meta-label">uptime</span>
+            <strong id="uptime">00:00:00</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="stats glass-inner">
+        <div class="stat-box">
+          <span class="meta-label">saved threads</span>
+          <strong id="savedCount">0</strong>
+        </div>
+        <div class="stat-box">
+          <span class="meta-label">clear</span>
+          <strong>VIP-7</strong>
+        </div>
+        <div class="stat-box">
+          <span class="meta-label">mode</span>
+          <strong>LOCAL</strong>
+        </div>
+      </section>
+    </aside>
+
+    <section class="workspace glass">
+      <header class="topbar">
+        <div>
+          <p class="kicker">secured channel</p>
+          <h2>Text Console</h2>
+        </div>
+        <div class="topbar-actions">
+          <button class="ghost-btn" id="userAuthBtn">User Auth</button>
+          <button class="ghost-btn" id="exportBtn">Export Logs</button>
+          <button class="danger-btn" id="clearBtn">Purge</button>
+        </div>
+      </header>
+
+      <section class="access-panel glass-inner">
+        <div class="access-copy">
+          <span class="status-dot"></span>
+          <span id="accessText">User authentication required</span>
+        </div>
+        <div class="access-controls">
+          <input id="vipName" type="text" maxlength="18" placeholder="Enter target codename" />
+          <button id="lockBtn">Authorize</button>
+        </div>
+      </section>
+
+      <section class="messages glass-inner" id="messageBoard" aria-live="polite">
+        <div class="welcome-block">
+          <p class="welcome-tag">system</p>
+          <h3>Encrypted local terminal ready.</h3>
+          <p>Authenticate, authorize a target codename, and transmit packets through the secured terminal channel.</p>
+        </div>
+      </section>
+
+      <form class="composer glass-inner" id="composerForm">
+        <label class="sr-only" for="messageInput">Type message</label>
+        <textarea id="messageInput" rows="4" placeholder="Authenticate user access to transmit encrypted messages..." maxlength="1200" disabled></textarea>
+        <div class="composer-footer">
+          <div class="typing-hint">
+            <span class="pulse-dot"></span>
+            <span id="charCount">0 / 1200</span>
+          </div>
+          <div class="composer-actions">
+            <button type="button" class="ghost-btn" id="demoBtn" disabled>Inject Demo</button>
+            <button type="submit" class="send-btn" id="sendBtn" disabled>Send Packet</button>
+          </div>
+        </div>
+      </form>
+      <div class="auth-modal hidden" id="authModal" aria-hidden="true">
+        <div class="auth-modal-backdrop" id="authModalBackdrop"></div>
+        <section class="auth-dialog glass-inner" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+          <div class="auth-dialog-header">
+            <div>
+              <p class="kicker">identity gateway</p>
+              <h3 id="authTitle">User Authentication</h3>
+            </div>
+            <button type="button" class="ghost-btn auth-close-btn" id="authCloseBtn" aria-label="Close authentication panel">Close</button>
+          </div>
+
+          <div class="auth-mode-toggle">
+            <button type="button" class="ghost-btn auth-mode-btn active" id="loginModeBtn">Login</button>
+            <button type="button" class="ghost-btn auth-mode-btn" id="signupModeBtn">Sign Up</button>
+          </div>
+
+          <form class="auth-form" id="authForm">
+            <label class="sr-only" for="authEmail">Email</label>
+            <input id="authEmail" type="email" maxlength="120" placeholder="Proton or secure email" autocomplete="email" required />
+
+            <label class="sr-only" for="authPassword">Password</label>
+            <input id="authPassword" type="password" maxlength="120" placeholder="Access password" autocomplete="current-password" required />
+
+            <div class="auth-signup-only hidden" id="authCodenameWrap">
+              <label class="sr-only" for="authCodename">Codename</label>
+              <input id="authCodename" type="text" maxlength="32" placeholder="Choose codename" autocomplete="off" />
+            </div>
+
+            <p class="auth-status" id="authStatus">Authenticate to unlock the terminal.</p>
+
+            <div class="auth-actions">
+              <button type="button" class="ghost-btn" id="authCancelBtn">Cancel</button>
+              <button type="submit" class="send-btn" id="authSubmitBtn">Authenticate</button>
+            </div>
+          </form>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <template id="messageTemplate">
+    <article class="message-card">
+      <div class="message-top">
+        <div>
+          <p class="message-author"></p>
+          <span class="message-time"></span>
+        </div>
+        <span class="message-badge">VIP</span>
+      </div>
+      <p class="message-body"></p>
+    </article>
+  </template>
+
+  <script src="script.js"></script>
+</body>
+</html>
