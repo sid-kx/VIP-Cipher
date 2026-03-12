@@ -38,7 +38,7 @@ const elements = {
   signupModeBtn: document.getElementById('signupModeBtn')
 };
 
-const API_BASE = 'http://127.0.0.1:3000';
+const API_BASE = window.location.origin;
 
 const state = {
   messages: [],
