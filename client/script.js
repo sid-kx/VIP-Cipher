@@ -38,7 +38,12 @@ const elements = {
   signupModeBtn: document.getElementById('signupModeBtn')
 };
 
-const API_BASE = window.location.origin;
+const supabaseConfig = window.VIP_CIPHER_CONFIG || {};
+const supabaseGlobal = window.supabase;
+
+const supabase = supabaseGlobal?.createClient
+  ? supabaseGlobal.createClient(supabaseConfig.supabaseUrl, supabaseConfig.supabaseAnonKey)
+  : null;
 
 const state = {
   messages: [],
@@ -46,8 +51,11 @@ const state = {
   sessionStart: Date.now(),
   authenticated: false,
   targetCodename: '',
-  socket: null,
-  authMode: 'login'
+  authMode: 'login',
+  userId: null,
+  activeThreadId: null,
+  realtimeChannel: null,
+  profileCache: new Map()
 };
 
 const formatTime = (date) => new Intl.DateTimeFormat([], {
@@ -57,28 +65,9 @@ const formatTime = (date) => new Intl.DateTimeFormat([], {
   day: '2-digit'
 }).format(date);
 
-const apiFetch = async (path, options = {}) => {
-  const response = await fetch(`${API_BASE}${path}`, {
-    credentials: 'include',
-    ...options,
-    headers: {
-      ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
-      ...(options.headers || {})
-    }
-  });
-
-  if (!response.ok) {
-    let message = 'Request failed';
-    try {
-      const data = await response.json();
-      message = data.error || message;
-    } catch {
-      // ignore json parse failure
-    }
-    throw new Error(message);
-  }
-
-  return response;
+const requireSupabase = () => {
+  if (supabase) return supabase;
+  throw new Error('Supabase is not configured in index.html');
 };
 
 const getTargetCodename = () => elements.vipName.value.trim().replace(/\s+/g, ' ');
@@ -120,71 +109,6 @@ const closeAuthModal = () => {
   elements.authModal.setAttribute('aria-hidden', 'true');
   elements.authForm.reset();
   setAuthStatus('Authenticate to unlock the terminal.');
-};
-
-const hasMessageId = (id) => id != null && state.messages.some((message) => message.id === id);
-
-const ensureSocketClient = async () => {
-  if (window.io) return window.io;
-
-  await new Promise((resolve, reject) => {
-    const existing = document.querySelector('script[data-socket-client="true"]');
-    if (existing) {
-      existing.addEventListener('load', resolve, { once: true });
-      existing.addEventListener('error', () => reject(new Error('Socket client failed to load')), { once: true });
-      return;
-    }
-
-    const script = document.createElement('script');
-    script.src = `${API_BASE}/socket.io/socket.io.js`;
-    script.dataset.socketClient = 'true';
-    script.onload = resolve;
-    script.onerror = () => reject(new Error('Socket client failed to load'));
-    document.head.appendChild(script);
-  });
-
-  return window.io;
-};
-
-const disconnectRealtime = () => {
-  if (!state.socket) return;
-  state.socket.disconnect();
-  state.socket = null;
-};
-
-const connectRealtime = async () => {
-  if (!state.authenticated || !state.codename) return;
-  if (state.socket) {
-    state.socket.emit('join_codename', state.codename);
-    return;
-  }
-
-  try {
-    const ioClient = await ensureSocketClient();
-    const socket = ioClient(API_BASE, {
-      withCredentials: true,
-      transports: ['websocket', 'polling']
-    });
-
-    socket.on('connect', () => {
-      socket.emit('join_codename', state.codename);
-    });
-
-    socket.on('message_received', (payload) => {
-      const normalized = {
-        id: payload.id,
-        author: payload.senderCodename,
-        body: payload.body,
-        time: Date.parse(payload.createdAt) || Date.now()
-      };
-
-      addMessage(normalized, { preserveInput: true });
-    });
-
-    state.socket = socket;
-  } catch (error) {
-    console.error(error);
-  }
 };
 
 const saveState = () => {
@@ -260,6 +184,8 @@ const renderMessages = () => {
   updateStats();
 };
 
+const hasMessageId = (id) => id != null && state.messages.some((message) => message.id === id);
+
 const addMessage = (payload, options = {}) => {
   if (hasMessageId(payload.id)) return;
 
@@ -276,6 +202,136 @@ const addMessage = (payload, options = {}) => {
   updateStats();
 };
 
+const updateCharCount = () => {
+  elements.charCount.textContent = `${elements.input.value.length} / 1200`;
+};
+
+const escapeFilterValue = (value) => String(value).replace(/,/g, '\\,');
+
+const getProfileByCodename = async (codename) => {
+  const client = requireSupabase();
+  const { data, error } = await client
+    .from('profiles')
+    .select('id, codename')
+    .eq('codename', codename)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data;
+};
+
+const getProfileCodename = async (userId) => {
+  if (state.profileCache.has(userId)) {
+    return state.profileCache.get(userId);
+  }
+
+  const client = requireSupabase();
+  const { data, error } = await client
+    .from('profiles')
+    .select('codename')
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (error) throw error;
+  const codename = data?.codename || 'Unknown Operator';
+  state.profileCache.set(userId, codename);
+  return codename;
+};
+
+const getOrCreateThread = async (targetCodename, { createIfMissing = false } = {}) => {
+  const client = requireSupabase();
+  const targetProfile = await getProfileByCodename(targetCodename);
+
+  if (!targetProfile) {
+    throw new Error('Target codename not found');
+  }
+
+  if (targetProfile.id === state.userId) {
+    throw new Error('You cannot send packets to your own codename');
+  }
+
+  const threadFilter = `and(user_one.eq.${escapeFilterValue(state.userId)},user_two.eq.${escapeFilterValue(targetProfile.id)}),and(user_one.eq.${escapeFilterValue(targetProfile.id)},user_two.eq.${escapeFilterValue(state.userId)})`;
+
+  const { data: existingThread, error: threadError } = await client
+    .from('threads')
+    .select('id, user_one, user_two')
+    .or(threadFilter)
+    .maybeSingle();
+
+  if (threadError) throw threadError;
+  if (existingThread) {
+    return { thread: existingThread, targetProfile };
+  }
+
+  if (!createIfMissing) {
+    return { thread: null, targetProfile };
+  }
+
+  const { data: createdThread, error: createError } = await client
+    .from('threads')
+    .insert({
+      user_one: state.userId,
+      user_two: targetProfile.id
+    })
+    .select('id, user_one, user_two')
+    .single();
+
+  if (createError) throw createError;
+  return { thread: createdThread, targetProfile };
+};
+
+const normalizeMessageRow = async (row) => ({
+  id: row.id,
+  author: await getProfileCodename(row.sender_id),
+  body: row.body,
+  time: Date.parse(row.created_at) || Date.now()
+});
+
+const disconnectRealtime = async () => {
+  if (!state.realtimeChannel) return;
+  const client = requireSupabase();
+  await client.removeChannel(state.realtimeChannel);
+  state.realtimeChannel = null;
+};
+
+const connectRealtime = async () => {
+  const client = requireSupabase();
+
+  if (!state.authenticated || !state.activeThreadId) {
+    await disconnectRealtime();
+    return;
+  }
+
+  if (state.realtimeChannel?.topic === `vip-thread-${state.activeThreadId}`) {
+    return;
+  }
+
+  await disconnectRealtime();
+
+  const channel = client
+    .channel(`vip-thread-${state.activeThreadId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'messages',
+        filter: `thread_id=eq.${state.activeThreadId}`
+      },
+      async (payload) => {
+        try {
+          const normalized = await normalizeMessageRow(payload.new);
+          addMessage(normalized, { preserveInput: true });
+        } catch (error) {
+          console.error(error);
+        }
+      }
+    )
+    .subscribe();
+
+  state.realtimeChannel = channel;
+};
+
 const loadThreadHistory = async (targetCodename) => {
   if (!state.authenticated) {
     alert('Authenticate first.');
@@ -283,45 +339,61 @@ const loadThreadHistory = async (targetCodename) => {
   }
 
   try {
-    const response = await apiFetch(`/messages/thread/${encodeURIComponent(targetCodename)}`);
-    const data = await response.json();
+    const { thread, targetProfile } = await getOrCreateThread(targetCodename, { createIfMissing: false });
+    state.targetCodename = targetProfile.codename;
 
-    state.messages = (data.messages || []).map((message) => ({
-      id: message.id,
-      author: message.senderCodename,
-      body: message.body,
-      time: Date.parse(message.createdAt) || Date.now()
-    }));
+    if (!thread) {
+      state.activeThreadId = null;
+      state.messages = [];
+      saveState();
+      renderMessages();
+      await disconnectRealtime();
+      return;
+    }
+
+    state.activeThreadId = thread.id;
+
+    const client = requireSupabase();
+    const { data, error } = await client
+      .from('messages')
+      .select('id, thread_id, sender_id, body, created_at')
+      .eq('thread_id', thread.id)
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true });
+
+    if (error) throw error;
+
+    state.messages = [];
+    for (const row of data || []) {
+      state.messages.push(await normalizeMessageRow(row));
+    }
 
     saveState();
     renderMessages();
-    updateStats();
     await connectRealtime();
   } catch (error) {
-    alert(error.message);
+    alert(error.message || 'Failed to load thread history');
   }
 };
 
-const updateCharCount = () => {
-  elements.charCount.textContent = `${elements.input.value.length} / 1200`;
-};
-
 const authorizeCodename = async () => {
-  state.targetCodename = getTargetCodename();
-  if (!state.targetCodename) {
+  const targetCodename = getTargetCodename();
+  if (!targetCodename) {
     alert('Enter the recipient codename first.');
     elements.vipName.focus();
     return;
   }
 
-  await loadThreadHistory(state.targetCodename);
+  await loadThreadHistory(targetCodename);
   elements.input.focus();
 };
 
 const toggleUserAuth = async () => {
   if (state.authenticated) {
     try {
-      await apiFetch('/auth/logout', { method: 'POST' });
+      const client = requireSupabase();
+      const { error } = await client.auth.signOut();
+      if (error) throw error;
     } catch (error) {
       alert(error.message);
       return;
@@ -329,18 +401,25 @@ const toggleUserAuth = async () => {
 
     state.authenticated = false;
     state.codename = 'Anonymous VIP';
-    disconnectRealtime();
+    state.userId = null;
+    state.activeThreadId = null;
+    state.messages = [];
+    await disconnectRealtime();
     saveState();
-    updateStats();
+    renderMessages();
     return;
   }
 
   openAuthModal('login');
 };
+
+const ensureProtonEmail = (email) => email.toLowerCase().endsWith('@proton.me');
+
 const submitAuthForm = async (event) => {
   event.preventDefault();
 
-  const email = elements.authEmail.value.trim();
+  const client = requireSupabase();
+  const email = elements.authEmail.value.trim().toLowerCase();
   const password = elements.authPassword.value;
   const codename = elements.authCodename.value.trim();
   const isSignup = state.authMode === 'signup';
@@ -350,33 +429,73 @@ const submitAuthForm = async (event) => {
     return;
   }
 
+  if (!ensureProtonEmail(email)) {
+    setAuthStatus('Only @proton.me addresses are allowed.', 'error');
+    return;
+  }
+
   if (isSignup && !codename) {
     setAuthStatus('Codename is required for sign up.', 'error');
     return;
   }
 
-  const body = { email, password };
-  if (isSignup) body.codename = codename;
-
   elements.authSubmitBtn.disabled = true;
   setAuthStatus(isSignup ? 'Creating secure identity...' : 'Authenticating secure identity...');
 
   try {
-    const response = await apiFetch(`/auth/${isSignup ? 'signup' : 'login'}`, {
-      method: 'POST',
-      body: JSON.stringify(body)
-    });
-    const data = await response.json();
+    let authUser = null;
+
+    if (isSignup) {
+      const { data, error } = await client.auth.signUp({ email, password });
+      if (error) throw error;
+      authUser = data.user;
+
+      if (!authUser) {
+        throw new Error('Sign up did not return a user');
+      }
+
+      const { error: profileError } = await client
+        .from('profiles')
+        .upsert({ id: authUser.id, codename }, { onConflict: 'id' });
+
+      if (profileError) throw profileError;
+
+      if (!data.session) {
+        setAuthStatus('Account created. Check your inbox to confirm your email before logging in.', 'success');
+        return;
+      }
+    } else {
+      const { data, error } = await client.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      authUser = data.user;
+    }
+
+    const sessionResult = await client.auth.getSession();
+    const sessionUser = sessionResult.data.session?.user || authUser;
+
+    if (!sessionUser) {
+      throw new Error('No active session found after authentication');
+    }
+
+    const { data: profile, error: profileError } = await client
+      .from('profiles')
+      .select('codename')
+      .eq('id', sessionUser.id)
+      .single();
+
+    if (profileError) throw profileError;
+
     state.authenticated = true;
-    state.codename = data.user.codename;
-    await connectRealtime();
+    state.codename = profile.codename;
+    state.userId = sessionUser.id;
+    state.profileCache.set(sessionUser.id, profile.codename);
     saveState();
     updateStats();
     setAuthStatus(isSignup ? 'Identity created. Terminal unlocked.' : 'Authentication successful. Terminal unlocked.', 'success');
     closeAuthModal();
     elements.input.focus();
   } catch (error) {
-    setAuthStatus(error.message, 'error');
+    setAuthStatus(error.message || 'Authentication failed', 'error');
   } finally {
     elements.authSubmitBtn.disabled = false;
   }
@@ -393,18 +512,17 @@ const exportLogs = async () => {
     return;
   }
 
-  try {
-    const response = await apiFetch(`/export/${encodeURIComponent(targetCodename)}`);
-    const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${targetCodename}-logs.txt`;
-    link.click();
-    URL.revokeObjectURL(url);
-  } catch (error) {
-    alert(error.message);
-  }
+  const lines = state.messages.map((message) => (
+    `[${new Date(message.time).toISOString()}] ${message.author}: ${message.body}`
+  ));
+
+  const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `${targetCodename}-logs.txt`;
+  link.click();
+  URL.revokeObjectURL(url);
 };
 
 const injectDemo = async () => {
@@ -427,26 +545,39 @@ const injectDemo = async () => {
     const file = picker.files?.[0];
     if (!file) return;
 
-    const formData = new FormData();
-    formData.append('image', file);
-
     try {
-      const uploadResponse = await apiFetch('/upload/image', {
-        method: 'POST',
-        body: formData
-      });
-      const uploadData = await uploadResponse.json();
+      const { thread } = await getOrCreateThread(targetCodename, { createIfMissing: true });
+      state.activeThreadId = thread.id;
+      await connectRealtime();
 
-      const sendResponse = await apiFetch('/messages/send', {
-        method: 'POST',
-        body: JSON.stringify({
-          targetCodename,
-          body: `[image attached] ${uploadData.fileUrl}`
+      const client = requireSupabase();
+      const filePath = `${state.userId}/${Date.now()}-${file.name.replace(/\s+/g, '-')}`;
+      const { error: uploadError } = await client
+        .storage
+        .from('packet-uploads')
+        .upload(filePath, file, { upsert: false });
+
+      if (uploadError) throw uploadError;
+
+      const { data: publicData } = client
+        .storage
+        .from('packet-uploads')
+        .getPublicUrl(filePath);
+
+      const { data: inserted, error: insertError } = await client
+        .from('messages')
+        .insert({
+          thread_id: thread.id,
+          sender_id: state.userId,
+          body: `[image attached] ${publicData.publicUrl}`
         })
-      });
-      await sendResponse.json();
+        .select('id, thread_id, sender_id, body, created_at')
+        .single();
+
+      if (insertError) throw insertError;
+      addMessage(await normalizeMessageRow(inserted));
     } catch (error) {
-      alert(error.message);
+      alert(error.message || 'Image upload failed');
     }
   });
 
@@ -458,7 +589,9 @@ const purgeMessages = async () => {
 
   if (state.authenticated) {
     try {
-      await apiFetch('/auth/logout', { method: 'POST' });
+      const client = requireSupabase();
+      const { error } = await client.auth.signOut();
+      if (error) throw error;
     } catch (error) {
       alert(error.message);
       return;
@@ -467,7 +600,9 @@ const purgeMessages = async () => {
 
   state.authenticated = false;
   state.codename = 'Anonymous VIP';
-  disconnectRealtime();
+  state.userId = null;
+  state.activeThreadId = null;
+  await disconnectRealtime();
   saveState();
   renderMessages();
 };
@@ -501,13 +636,25 @@ const bindEvents = () => {
     if (!body) return;
 
     try {
-      const response = await apiFetch('/messages/send', {
-        method: 'POST',
-        body: JSON.stringify({ targetCodename, body })
-      });
-      await response.json();
+      const client = requireSupabase();
+      const { thread } = await getOrCreateThread(targetCodename, { createIfMissing: true });
+      state.activeThreadId = thread.id;
+      await connectRealtime();
+
+      const { data: inserted, error } = await client
+        .from('messages')
+        .insert({
+          thread_id: thread.id,
+          sender_id: state.userId,
+          body
+        })
+        .select('id, thread_id, sender_id, body, created_at')
+        .single();
+
+      if (error) throw error;
+      addMessage(await normalizeMessageRow(inserted));
     } catch (error) {
-      alert(error.message);
+      alert(error.message || 'Packet failed');
     }
   });
 
@@ -705,22 +852,37 @@ const initGlobe = () => {
 
 const hydrateSession = async () => {
   try {
-    const response = await apiFetch('/auth/me');
-    const data = await response.json();
+    const client = requireSupabase();
+    const { data, error } = await client.auth.getSession();
+    if (error) throw error;
 
-    if (data.user) {
-      state.authenticated = true;
-      state.codename = data.user.codename;
-      await connectRealtime();
-    } else {
+    const user = data.session?.user;
+    if (!user) {
       state.authenticated = false;
       state.codename = 'Anonymous VIP';
-      disconnectRealtime();
+      state.userId = null;
+      await disconnectRealtime();
+      return;
     }
-  } catch {
+
+    const { data: profile, error: profileError } = await client
+      .from('profiles')
+      .select('codename')
+      .eq('id', user.id)
+      .single();
+
+    if (profileError) throw profileError;
+
+    state.authenticated = true;
+    state.codename = profile.codename;
+    state.userId = user.id;
+    state.profileCache.set(user.id, profile.codename);
+  } catch (error) {
+    console.error(error);
     state.authenticated = false;
     state.codename = 'Anonymous VIP';
-    disconnectRealtime();
+    state.userId = null;
+    await disconnectRealtime();
   }
 };
 
