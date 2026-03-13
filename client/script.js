@@ -1,9 +1,4 @@
-const storageKeys = {
-  messages: 'vipCipherMessages',
-  codename: 'vipCipherCodename',
-  sessionStart: 'vipCipherSessionStart',
-  authenticated: 'vipCipherAuthenticated'
-};
+
 
 const elements = {
   board: document.getElementById('messageBoard'),
@@ -40,7 +35,7 @@ const elements = {
 
 const supabaseConfig = window.VIP_CIPHER_CONFIG || {};
 const supabaseGlobal = window.supabase;
-let supabase = null;
+let supabaseClient = null;
 
 const state = {
   messages: [],
@@ -63,7 +58,7 @@ const formatTime = (date) => new Intl.DateTimeFormat([], {
 }).format(date);
 
 const requireSupabase = () => {
-  if (supabase) return supabase;
+  if (supabaseClient) return supabaseClient;
 
   if (!supabaseGlobal?.createClient) {
     throw new Error('Supabase client script is missing in index.html');
@@ -73,12 +68,12 @@ const requireSupabase = () => {
     throw new Error('Supabase URL or anon key is missing in index.html');
   }
 
-  supabase = supabaseGlobal.createClient(
+  supabaseClient = supabaseGlobal.createClient(
     supabaseConfig.supabaseUrl,
     supabaseConfig.supabaseAnonKey
   );
 
-  return supabase;
+  return supabaseClient;
 };
 
 const getTargetCodename = () => elements.vipName.value.trim().replace(/\s+/g, ' ');
