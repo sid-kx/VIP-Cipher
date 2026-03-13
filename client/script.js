@@ -40,10 +40,7 @@ const elements = {
 
 const supabaseConfig = window.VIP_CIPHER_CONFIG || {};
 const supabaseGlobal = window.supabase;
-
-const supabase = supabaseGlobal?.createClient
-  ? supabaseGlobal.createClient(supabaseConfig.supabaseUrl, supabaseConfig.supabaseAnonKey)
-  : null;
+let supabase = null;
 
 const state = {
   messages: [],
@@ -67,7 +64,21 @@ const formatTime = (date) => new Intl.DateTimeFormat([], {
 
 const requireSupabase = () => {
   if (supabase) return supabase;
-  throw new Error('Supabase is not configured in index.html');
+
+  if (!supabaseGlobal?.createClient) {
+    throw new Error('Supabase client script is missing in index.html');
+  }
+
+  if (!supabaseConfig.supabaseUrl || !supabaseConfig.supabaseAnonKey) {
+    throw new Error('Supabase URL or anon key is missing in index.html');
+  }
+
+  supabase = supabaseGlobal.createClient(
+    supabaseConfig.supabaseUrl,
+    supabaseConfig.supabaseAnonKey
+  );
+
+  return supabase;
 };
 
 const getTargetCodename = () => elements.vipName.value.trim().replace(/\s+/g, ' ');
