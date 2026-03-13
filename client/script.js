@@ -1,5 +1,13 @@
 
 
+
+const storageKeys = {
+  messages: 'vipCipherMessages',
+  codename: 'vipCipherCodename',
+  sessionStart: 'vipCipherSessionStart',
+  authenticated: 'vipCipherAuthenticated'
+};
+
 const elements = {
   board: document.getElementById('messageBoard'),
   form: document.getElementById('composerForm'),
